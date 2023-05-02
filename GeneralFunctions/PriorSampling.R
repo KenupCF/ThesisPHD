@@ -2,6 +2,7 @@
 
 priorSampling<-function(L,size,seed=NULL,method="random"){
   
+  require(lhs)
   require(mc2d)
   
   if(!is.null(seed)){set.seed(seed)}
