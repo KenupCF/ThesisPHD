@@ -6,7 +6,7 @@ require(devtools)
 require(dplyr)
 
 # Import 4-point convertion function
-source_url("https://raw.githubusercontent.com/KenupCF/ThesisPHD/main/Chapter%202/SolvePERT.R")
+devtools::source_url("https://raw.githubusercontent.com/KenupCF/ThesisPHD/main/Chapter%22/SolvePERT.R")
 
 load(file=".\\Example Data.RData")
 
