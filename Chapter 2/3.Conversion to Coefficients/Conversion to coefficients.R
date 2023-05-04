@@ -12,6 +12,8 @@ require(jagsUI)
 require(pracma)
 
 
+devtools::source_url("https://raw.githubusercontent.com/KenupCF/ThesisPHD/main/GeneralFunctions/estimateBUGShyperPars.R")
+
 #Named list of possible mean functions
 meanFUN<-list("beta"=function(x){
   a<-x$shape1
@@ -164,7 +166,9 @@ sink()
 
 
 
+####
 ### Generating prediction using the MCMC method (no covariance)
+####
 
 # Input object for the generated coefficients assuming no covariance
 data.list.no_cov=list(
@@ -181,5 +185,64 @@ data.list.no_cov=list(
     mean(no_cov_coef$sims.list$beta3),
     sd(no_cov_coef$sims.list$beta3)))
 
+# Run jags model to predict
+no_covariance_reconstruction<-jagsUI::jags(
+  data=data.list.no_cov,
+  model.file="model_terms_to_outcomes.txt",
+  parameters.to.save=c("M0","M1","M2","M3","M1_2"),
+  n.iter=11e3,
+  n.adapt=200,
+  n.burnin=1e3,
+  n.thin=1,
+  n.chains=1)
 
 
+no_covariance_reconstruction.hpars<-estimateBUGShyperPars(no_covariance_reconstruction,
+                                        method = "jagsUI",
+                                        parDist = c(M0="norm",
+                                                    M1="norm",
+                                                    M2="norm",
+                                                    M3="norm",
+                                                    M1_2="norm"))%>%
+  dplyr::mutate(dist=Distribution)%>%
+  dplyr::select(mean,sd,dist,TruePar)
+
+no_covariance_reconstruction.hpars<-split(no_covariance_reconstruction.hpars,
+                                          no_covariance_reconstruction.hpars$TruePar)
+
+
+####
+### Generating prediction using the Q method (maximum covariance)
+####
+
+# Input object for the Q generated coefficients
+data.list.perf_cov=list(
+                 alpha.input=perf_cov_coef$alpha,
+                 b1.input=perf_cov_coef$beta1,
+                 b2.input=perf_cov_coef$beta2,
+                 b3.input=perf_cov_coef$beta3)
+
+
+# Run jags model to predict
+perf_covariance_reconstruction<-jagsUI::jags(
+  data=data.list.perf_cov,
+  model.file="model_terms_to_outcomes.txt",
+  parameters.to.save=c("M0","M1","M2","M3","M1_2"),
+  n.iter=11e3,
+  n.adapt=200,
+  n.burnin=1e3,
+  n.thin=1,
+  n.chains=1)
+
+
+perf_covariance_reconstruction.hpars<-estimateBUGShyperPars(perf_covariance_reconstruction,
+                                     method = "jagsUI",
+                                     parDist = c(M0="norm",
+                                                 M1="norm",
+                                                 M2="norm",
+                                                 M3="norm",
+                                                 M1_2="norm"))%>%
+  dplyr::mutate(dist=Distribution)%>%
+  dplyr::select(mean,sd,dist,TruePar)
+
+perf_covariance_reconstruction.hpars<-split(perf_covariance_reconstruction.hpars,perf_covariance_reconstruction.hpars$TruePar)
