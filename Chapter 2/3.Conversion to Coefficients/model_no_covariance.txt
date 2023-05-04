@@ -1,0 +1,15 @@
+
+model{
+
+   SQ~dnorm( 0 , 1 )
+   Alt1~dnorm( 1 , 1 )
+   Alt2~dnorm( 1 , 4 )
+   Alt3~dnorm( 1 , 0.25 )
+ 
+ # Generate Coefficients
+ 
+ alpha<-(SQ)
+ beta1<-(Alt1) - alpha
+ beta2<-(Alt2) - alpha
+ beta3<-(Alt3) - alpha
+}
