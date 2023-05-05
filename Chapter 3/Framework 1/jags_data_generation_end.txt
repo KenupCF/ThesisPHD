@@ -1,0 +1,42 @@
+#####################
+## Data Generation ##
+#####################
+for (m in 1:n_alternatives){
+  
+  for (t in 1:n_years){
+		 
+		
+	  # Expected Fecundity for that management, on that year	
+      log(ExpFec[m,t])<-log(ExpectedFecundity[2,m])+
+		re.t.fec[t]+
+		0
+		
+	  # Expected Survival for that management, on that year	  
+      logit(ExpPhi[m,t])<-logit(ExpectedSurvival[2,m]) +
+		re.t.phi[t]+
+		0
+		
+	  # Create dataset of fledgings born per female, on each year.
+	  for(i in 1:ifelse(fec.sample.size>0,fec.sample.size,2)){		 
+		 #new.fledgings[i,m]~dpois(pred.count2[m])
+		 new.fledgings[i,m,t]~dpois(ExpFec[m,t])
+		}
+
+	  # Create dataset of fledgings born per female, on each year.
+	  for(i in 1:ifelse(surv.sample.size>0,surv.sample.size,2)){
+	  new.alive[i,1,m,t]<-1
+	  new.seen[i,1,m,t]<-1
+
+	   for(j in 2:6){
+		
+		# Converting the predicted annual survival
+		# to survival between surveys (assuming monthly surveys)
+		SurveySurvival[i,j,m,t]<-pow(ExpPhi[m,t],1/12)
+					
+		new.alive[i,j,m,t]~dbern(SurveySurvival[i,j,m,t]	*new.alive[i,j-1,m,t])
+		new.seen[i,j,m,t]~dbern(DetectProb*new.alive[i,j,m,t])
+	   }
+	  }
+  }
+ }
+}
