@@ -1,0 +1,455 @@
+###############################################
+######Value of Information Pateke Monitoring###
+###############################################
+
+require(plyr)
+require(dplyr)
+require(magrittr)
+require(data.table)
+require(ggplot2)
+require(fitdistrplus)
+require(jagsUI)
+require(devtools)
+require(abind)
+require(reshape2)
+require(gtools)
+require(lubridate)
+
+# Object with the proper link and ilink funcitons for each distribution
+linkFUN<-list("gamma"=log,
+              "pois"=log,
+              "beta"=logit,
+              "normal"=identity)
+ilinkFUN<-list("gamma"=exp,
+               "pois"=exp,
+               "beta"=inv.logit,
+               "normal"=identity)
+
+
+####
+#### Part 0
+####
+
+# Number of simulations to use
+nSims=1000
+# Number of years to simulate for
+nYears=1
+
+
+###########################################
+### Part I ################################
+### Defining the decision scenario ########
+###########################################
+
+#### Cost ###
+###Price of stuff
+
+CostOfCameras<-250 #in NZD
+CostOfRadios<-500 # in NZD
+
+CostOfSoftSupp<-10e3 #in NZD
+CostOfHardSupp<-20e3 #in NZD
+
+# Dataframe holding possible monitoring options
+monitoringOptions<-expand.grid(
+  
+  NoCameras=c(0
+              ,5
+              ,10
+              ,20
+  ),
+  
+  TrackedReleasedBirds=c(0
+                         ,5
+                         ,10
+                         ,20
+  ),
+  
+  RadioSurveyLength=c(0,6))
+
+# Remove illogical monitoring options
+monitoringOptions<-monitoringOptions%>%
+  dplyr::filter(!(RadioSurveyLength==0 & TrackedReleasedBirds>0))%>%
+  dplyr::filter(!(TrackedReleasedBirds==0 & RadioSurveyLength>0))
+monitorCols<-colnames(monitoringOptions)
+
+
+# Calculate  cost of monitoring option
+monitoringOptions<-monitoringOptions%>%
+  dplyr::mutate(CostMonitoring=(NoCameras*CostOfCameras)+
+                  (TrackedReleasedBirds*CostOfRadios),
+                # 'm' is the id defining each monitoring scenarion
+                m=1:n())
+
+# Extract which of the monitoring options is full uncertainty
+# i.e., no new information
+Uncertainty_index<-which(apply(
+  monitoringOptions[,monitorCols],1,function(x){sum(x)==0}))
+
+# Creating management options
+managementOptions<-expand.grid(
+  SoftFeed=0:1,
+  HardFeed=0:1,
+  ReleasedAnimals=c(0,0),
+  ReleaseSchedule=0:2)%>%
+  # Removing illogical management alternatives
+  dplyr::filter(!(SoftFeed == 1 & HardFeed == 1))%>%
+  dplyr::filter(!(ReleasedAnimals == 0 & ReleaseSchedule > 0))%>%
+  dplyr::filter(!(ReleasedAnimals > 0 & ReleaseSchedule == 0))
+
+managementOptions<-managementOptions%>%
+  dplyr::filter(!duplicated(managementOptions))
+
+managementCols<-colnames(managementOptions)
+
+# Dataframe holding possible management options and their cost
+managementOptions<-managementOptions%>%
+  dplyr::mutate(CostMgmt=(SoftFeed*CostOfSoftSupp)+
+                  (HardFeed*CostOfHardSupp)+
+                  (ReleasedAnimals*ReleaseSchedule*1000),
+                mgmt=1:n())
+Baseline_index<-which(apply(
+  managementOptions[,managementCols],1,function(x){sum(x)==0}))	
+
+############
+###Priors###
+############
+
+#Defining arbitrary priors
+#@note_caio (change for more realistic values)
+priors<-list(
+  reprodIntercept=data.frame(mean=log(1.1),sd=.75,dist="norm"),
+  reprodBetaSoftFeed=data.frame(mean=0.27,sd=.45,dist="norm"),
+  reprodBetaHardFeed=data.frame(mean=0.54,sd=.55,dist="norm"),
+  survIntercept=data.frame(mean=logit(.67),sd=.43,dist="norm"),	
+  survAgeEffect=data.frame(mean=0,sd=1e-3,dist="norm"),	
+  survBetaSoftFeed=data.frame(mean=0.50,sd=.54,dist="norm"),	
+  survBetaHardFeed=data.frame(mean=0.75,sd=.54,dist="norm"),
+  survMastEffect=data.frame(mean=0,sd=1e-3,dist="norm"),
+  survCostRelease=data.frame(shape1=90,shape2=10,dist="beta")
+)
+
+noAgeClasses<-3
+
+
+
+
+# Calculate where the 0 values of a Leslie matrix would go, for a given number of age classes
+# (i.e., impossible transitions)
+{
+  L<-matrix(0,nrow=noAgeClasses,ncol=noAgeClasses)
+  
+  for(i in 1:ncol(L)){
+    L[1,i]<-1
+    for(j in 1:nrow(L)){
+      L[min(i+1,nrow(L)),i]<-1
+    }}
+  
+  ZeroIndexes<-reshape2::melt(L)%>%
+    dplyr::filter(value==0)%>%
+    dplyr::mutate(i=Var1,j=Var2)%>%
+    dplyr::select(i,j)%>%
+    as.matrix
+}
+
+
+
+
+
+
+# Objects to hold results
+monitoringResults<-list()
+jagsResults<-list()
+
+# Start iterations
+start..<-now()
+
+# Empty objects to hold results
+no_survivors.df.General<-data.frame()
+n_fledglings.General<-data.frame()
+generatedData<-list()
+trueValues<-list()
+
+jags.pt1<-readLines(".\\jags_model.txt")
+jags.pt2<-readLines(".\\jags_data_generation_end.txt")
+cat(paste0(c(jags.pt1,jags.pt2),collapse="\n"),file="data_gen.txt")
+
+
+### For each monitoring scenario
+for(m in 1:nrow(monitoringOptions)){
+  
+  # Object with data to input into JAGS
+  dataGen.bugs<-list(
+    # Management Description
+    n_alternatives=nrow(managementOptions),
+    SoftFeed=managementOptions$SoftFeed,
+    HardFeed=managementOptions$HardFeed,
+    ReleasedAnimals=managementOptions$ReleasedAnimals,
+    ReleaseSchedule=managementOptions$ReleaseSchedule,
+    
+    fec.sample.size=monitoringOptions$NoCameras[m],
+    surv.sample.size=monitoringOptions$TrackedReleasedBirds[m],
+    seen=1,
+    # Priors
+    FledgNumberIntercept=as.numeric((priors$reprodIntercept)[1,c("mean","sd")]),
+    FledgNumberSoftFeedEffect=as.numeric((priors$reprodBetaSoftFeed)[1,c("mean","sd")]),
+    FledgNumberHardFeedEffect=as.numeric((priors$reprodBetaHardFeed)[1,c("mean","sd")]),
+    # Priors
+    survivalIntercept=as.numeric((priors$survIntercept)[1,c("mean","sd")]),
+    survivalAgeEffect=as.numeric((priors$survAgeEffec)[1,c("mean","sd")]),
+    survivalMastEffect=as.numeric((priors$survMastEffect)[1,c("mean","sd")]),
+    survivalSoftFeedEffect=as.numeric((priors$survBetaSoftFeed)[1,c("mean","sd")]),
+    survivalHardFeedEffect=as.numeric((priors$survBetaHardFeed)[1,c("mean","sd")]),
+    survivalCostOfRelease=as.numeric((priors$survCostRelease)[1,c("shape1","shape2")]) )
+  
+  
+  dataGen.bugs$ZeroIndexes<-ZeroIndexes
+  dataGen.bugs$N0<-c(0,25,25)  
+  dataGen.bugs$n_years<-nYears
+  dataGen.bugs$n_years_proj<-50 ###
+  
+  runToyMCMC=T
+  generatedData[[m]]<-jagsUI::jags(
+    data=dataGen.bugs,
+    # inits=initial.list,
+    model.file="data_gen.txt",
+    parameters.to.save=c(
+      "new.fledgings"
+      ,"new.seen"
+      ,"isMastYear"
+      ,"Lambda"
+      ,"Decline"
+      ,"ExpectedSurvival"
+      ,"ExpectedFecundity"
+    ),
+    n.iter=nSims,
+    n.adapt=100,
+    n.burnin=0,
+    n.thin=1,
+    n.chains=1,
+    # seed=26051991,
+    verbose=F,
+    codaOnly = T)
+  
+  # Fixing instances of no monitoring 
+  if(dataGen.bugs$fec.sample.size==0){generatedData[[m]]$sims.list$new.fledgings = generatedData[[m]]$sims.list$new.fledgings*NA}  
+  if(dataGen.bugs$surv.sample.size==0){generatedData[[m]]$sims.list$new.seen = generatedData[[m]]$sims.list$new.seen*NA}  
+  
+  generatedData[[m]]$sims.list$new.fledgings.melt<-generatedData[[m]]$sims.list$new.fledgings%>%
+    reshape2::melt()%>%
+    dplyr::rename(Sim=Var1,Sample=Var2,mgmt=Var3,Year=Var4)
+  
+  generatedData[[m]]$sims.list$new.seen.melt<-generatedData[[m]]$sims.list$new.seen%>%
+    reshape2::melt()%>%
+    dplyr::rename(Sim=Var1,Sample=Var2,Survey=Var3,mgmt=Var4,Year=Var5)
+  
+  # df containing true values of lambda
+  trLambda<-generatedData[[m]]$sims.list$Lambda%>%
+    reshape2::melt()%>%
+    dplyr::rename(Sim=Var1,mgmt=Var2,Lambda=value)
+  
+  
+  trDecline<-generatedData[[m]]$sims.list$Decline%>%
+    reshape2::melt()%>%
+    dplyr::rename(Sim=Var1,mgmt=Var2,Decline=value)
+  
+  trSurvival<-generatedData[[m]]$sims.list$ExpectedSurvival%>%
+    reshape2::melt()%>%
+    dplyr::rename(Sim=Var1,Age=Var2,mgmt=Var3,Survival=value)%>%
+    dplyr::mutate(Age = paste("Age_",Age,"_Survival",sep=""))%>%
+    tidyr::pivot_wider(names_from=Age,values_from=Survival)
+  
+  trFecundity<-generatedData[[m]]$sims.list$ExpectedFecundity%>%
+    reshape2::melt()%>%
+    dplyr::rename(Sim=Var1,Age=Var2,mgmt=Var3,Fecundity=value)%>%
+    dplyr::mutate(Age = paste("Age_",Age,"_Fecundity",sep=""))%>%
+    tidyr::pivot_wider(names_from=Age,values_from=Fecundity)
+  
+  trueValues[[m]]<-merge(trLambda,trDecline,by=c("Sim","mgmt"))%>%
+    merge(trSurvival,by=c("Sim","mgmt"))%>%
+    merge(trFecundity,by=c("Sim","mgmt"))%>%
+    dplyr::mutate(m=m)
+}
+
+
+
+
+## Calculate predicted outcomes for management scenarios
+
+PredictedOutcomesFull<-plyr::rbind.fill(trueValues)
+
+# Calculate limits on predicted outcomes as the 95% range
+globalLimits<-list(lambda=list(min=quantile(PredictedOutcomesFull$Lambda,.025),
+                               max=quantile(PredictedOutcomesFull$Lambda,0.975)))
+
+
+### Objective weights ###
+Weights<-c("biological"=.82,"monetary"=.18)
+
+PredictedOutcomesSummary<-PredictedOutcomesFull%>%
+  dplyr::group_by(mgmt)%>%
+  dplyr::summarise(Lambda=mean(Lambda),Decline=mean(Decline))%>%
+  merge(managementOptions)%>%
+  dplyr::mutate(CostScore=ObjectiveScore(CostMgmt,minimize = T)*Weights[2],
+                BioScore=ObjectiveScore(Lambda,
+                                        Max=globalLimits$lambda$max,
+                                        Min=globalLimits$lambda$min)*Weights[1],
+                BioScore2=ObjectiveScore(Decline,Min = 0,Max=0.5,minimize = T)*Weights[1],
+                Score=CostScore+BioScore,
+                Score2=CostScore+BioScore2)
+
+decisionUnderUncertainty<-PredictedOutcomesSummary%>%
+  filter(Score==max(Score))%>%
+  pull(mgmt)
+
+
+# jags.list<-list()
+# jags.pred<-list()
+
+totalSims<-expand.grid(m=monitoringOptions$m,
+                       i=1:nrow(generatedData[[1]]$samples[[1]]))
+
+
+
+jags.list<-list()
+hPars<-list()
+# For each index of the parameter space 
+ss<-1:nrow(totalSims)
+pt<-0
+
+
+jags.pt1<-readLines(".\\jags_model.txt")
+jags.pt2<-readLines(".\\jags_data_interpretation_end.txt")
+cat(paste0(c(jags.pt1,jags.pt2),collapse="\n"),file="data_read.txt")
+
+
+print.crit<-50
+
+pb <- winProgressBar(title = "Running", # Window title
+                     label = "Percentage completed", # Window label
+                     min = 0,      # Minimum value of the bar
+                     max = length(ss), # Maximum value of the bar
+                     initial = 0,  # Initial value of the bar
+                     width = 300L) # Width of the window 
+
+for(s in ss){
+  
+  pt<-pt+1
+  i=totalSims$i[s]
+  m=totalSims$m[s]
+  
+  FledgingDataLoop<-generatedData[[m]]$sims.list$new.fledgings.melt%>%
+    dplyr::filter(Sim==i,mgmt==decisionUnderUncertainty)
+  
+  SurvDataLoop<-generatedData[[m]]$sims.list$new.seen.melt%>%
+    dplyr::filter(Sim==i,mgmt==decisionUnderUncertainty)%>%
+    dplyr::group_by(Survey)%>%
+    dplyr::arrange(Year,Sample)%>%
+    dplyr::mutate(Sample2=1:n())
+  
+  SeenLoop<-SurvDataLoop%>%
+    dplyr::select(Sample2,Survey,value)%>%
+    acast(Sample2~Survey)
+  
+  PhiMgmt<-SurvDataLoop%>%filter(Survey==1)%>%pull(mgmt)
+  # Extracting Data from Previous Collected Dataset
+  data.bugs<-list(
+    ### Management Alternatives ####
+    n_alternatives=nrow(managementOptions),
+    SoftFeed=managementOptions$SoftFeed,
+    HardFeed=managementOptions$HardFeed,
+    ReleasedAnimals=managementOptions$ReleasedAnimals,
+    ReleaseSchedule=managementOptions$ReleaseSchedule,
+    
+    ##############
+    ### DATA ####
+    #############
+    fledgings=FledgingDataLoop$value,
+    FecSoftFeed = managementOptions$SoftFeed[FledgingDataLoop$mgmt],
+    FecHardFeed = managementOptions$HardFeed[FledgingDataLoop$mgmt],
+    FecTime=FledgingDataLoop$Year,
+    FecMast=generatedData[[m]]$sims.list$isMastYear[i,FledgingDataLoop$Year],
+    
+    ###############################
+    ### Survival data and priors ##
+    ###############################
+    seen=SeenLoop,
+    PhiSoftFeed = managementOptions$SoftFeed[PhiMgmt],
+    PhiHardFeed = managementOptions$HardFeed[PhiMgmt],
+    PhiTime=SurvDataLoop%>%filter(Survey==1)%>%pull(Year),
+    PhiMast = generatedData[[m]]$sims.list$isMastYear[i,SurvDataLoop%>%filter(Survey==1)%>%pull(Year)],
+    
+    # Priors
+    FledgNumberIntercept=as.numeric((priors$reprodIntercept)[1,c("mean","sd")]),
+    FledgNumberSoftFeedEffect=as.numeric((priors$reprodBetaSoftFeed)[1,c("mean","sd")]),
+    FledgNumberHardFeedEffect=as.numeric((priors$reprodBetaHardFeed)[1,c("mean","sd")]),
+    # Priors
+    survivalIntercept=as.numeric((priors$survIntercept)[1,c("mean","sd")]),
+    survivalAgeEffect=as.numeric((priors$survAgeEffec)[1,c("mean","sd")]),
+    survivalMastEffect=as.numeric((priors$survMastEffect)[1,c("mean","sd")]),
+    survivalSoftFeedEffect=as.numeric((priors$survBetaSoftFeed)[1,c("mean","sd")]),
+    survivalHardFeedEffect=as.numeric((priors$survBetaHardFeed)[1,c("mean","sd")]),
+    survivalCostOfRelease=as.numeric((priors$survCostRelease)[1,c("shape1","shape2")]) )
+  
+  data.bugs$seen[,1]<-1
+  data.bugs$alive<-data.bugs$seen
+  data.bugs$alive[data.bugs$alive==0]<-NA
+  data.bugs$ZeroIndexes<-ZeroIndexes
+  data.bugs$N0<-c(0,25,25) ###
+  data.bugs$n_years<-nYears ###
+  data.bugs$n_years_proj<-50 ###
+  
+  # Run model (not a lot of chains)
+  jags.list[[pt]]<-jagsUI::jags(
+    data=data.bugs,
+    # inits=initial.list,
+    model.file="data_read.txt",
+    parameters.to.save=c(
+      "Lambda"
+      ,"Decline"
+    ),
+    n.iter=ifelse(runToyMCMC,100,3e3),
+    n.adapt=ifelse(runToyMCMC,5,200),
+    n.burnin=ifelse(runToyMCMC,5,1e3),
+    n.thin=ifelse(runToyMCMC,1,1),
+    n.chains=ifelse(runToyMCMC,1,2),
+    # n.chains=1,
+    verbose=F,
+    codaOnly = T)
+  
+  jags.list[[pt]]$m<-m
+  jags.list[[pt]]$i<-i
+  jags.list[[pt]]$model <- NULL
+  
+  hPars[[pt]]<-estimateBUGShyperPars(input = jags.list[[pt]],
+                                     parDist = c(survIntercept="norm",
+                                                 survBetaSoftFeed="norm",
+                                                 survAgeEffect="norm",
+                                                 survBetaHardFeed="norm",
+                                                 reprodIntercept="norm",
+                                                 reprodBetaSoftFeed="norm",
+                                                 reprodBetaHardFeed="norm",
+                                                 ExpectedSurvival="beta",
+                                                 Lambda = "gamma",
+                                                 Decline = "norm",
+                                                 ExpectedFecundity="gamma"),
+                                     # start=list(Decline=list(prob=.001)),
+                                     method="jagsUI")%>%
+    dplyr::mutate(m=m,i=i)
+  
+  if(flushJags){jags.list[[pt]]<-NULL}
+  if(s%%print.crit==0){
+    print(paste(s,"out of",max(ss)))
+    cat(paste(s,object.size(jags.list)),file="progress.txt")}
+  # if(s%%250==0){
+  # pt<-pt+1
+  # save(jags.list,file=paste0("JAGS.resu.pt",pt,".RData"))
+  # jags.list[1:s]<-NULL
+  # }
+  
+  
+  
+  
+}
+
+
