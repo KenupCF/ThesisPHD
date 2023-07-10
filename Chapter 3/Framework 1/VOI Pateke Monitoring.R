@@ -260,28 +260,31 @@ for(m in 1:nrow(monitoringOptions)){
     reshape2::melt()%>%
     dplyr::rename(Sim=Var1,Sample=Var2,Survey=Var3,mgmt=Var4,Year=Var5)
   
-  # df containing true values of lambda
+  #df containing true values of lambda for each simulation
   trLambda<-generatedData[[m]]$sims.list$Lambda%>%
     reshape2::melt()%>%
     dplyr::rename(Sim=Var1,mgmt=Var2,Lambda=value)
   
-  
+  # Same for values of whether population was declining
   trDecline<-generatedData[[m]]$sims.list$Decline%>%
     reshape2::melt()%>%
     dplyr::rename(Sim=Var1,mgmt=Var2,Decline=value)
   
+  # Same for survival
   trSurvival<-generatedData[[m]]$sims.list$ExpectedSurvival%>%
     reshape2::melt()%>%
     dplyr::rename(Sim=Var1,Age=Var2,mgmt=Var3,Survival=value)%>%
     dplyr::mutate(Age = paste("Age_",Age,"_Survival",sep=""))%>%
     tidyr::pivot_wider(names_from=Age,values_from=Survival)
   
+  # Same for fecundity
   trFecundity<-generatedData[[m]]$sims.list$ExpectedFecundity%>%
     reshape2::melt()%>%
     dplyr::rename(Sim=Var1,Age=Var2,mgmt=Var3,Fecundity=value)%>%
     dplyr::mutate(Age = paste("Age_",Age,"_Fecundity",sep=""))%>%
     tidyr::pivot_wider(names_from=Age,values_from=Fecundity)
   
+  # Merge all those values into a single data.frame, and save to the corresponding monitoring scenario
   trueValues[[m]]<-merge(trLambda,trDecline,by=c("Sim","mgmt"))%>%
     merge(trSurvival,by=c("Sim","mgmt"))%>%
     merge(trFecundity,by=c("Sim","mgmt"))%>%
@@ -294,6 +297,8 @@ for(m in 1:nrow(monitoringOptions)){
 ## Calculate predicted outcomes for management scenarios
 
 PredictedOutcomesFull<-plyr::rbind.fill(trueValues)
+
+str(PredictedOutcomesFull) # full data.frame showing predicted outcome for each iteration of each scenario
 
 # Calculate limits on predicted outcomes as the 95% range
 globalLimits<-list(lambda=list(min=quantile(PredictedOutcomesFull$Lambda,.025),
