@@ -18,6 +18,10 @@ require(lubridate)
 devtools::source_url("https://raw.githubusercontent.com/KenupCF/ThesisPHD/main/GeneralFunctions/ObjectiveScore.R")
 devtools::source_url("https://raw.githubusercontent.com/KenupCF/ThesisPHD/main/GeneralFunctions/estimateBUGShyperPars.R")
 
+devtools::source_url("https://raw.githubusercontent.com/KenupCF/Kenup-Repo/master/Quick%20Functions.R")
+
+
+
 # Object with the proper link and ilink funcitons for each distribution
 linkFUN<-list("gamma"=log,
               "pois"=log,
@@ -34,7 +38,7 @@ ilinkFUN<-list("gamma"=exp,
 ####
 
 # Number of simulations to run
-nSims=50
+nSims=4
 # Large numbers will take quite sometime...
 # nSims=1000
 
@@ -467,5 +471,140 @@ for(s in ss){
   
   
 }
+
+
+
+# Create a database
+fullHyperPars<-rbind.fill(hPars)%>%
+  # For each estimated parameter
+  dplyr::group_by(EstPar)%>%
+  # Create a variable that is explicitly which is the index of said parameter (extracted from between brackets)
+  dplyr::mutate(ParIndex=gsub(x=empty2na(str_extract_all(EstPar, "\\[[^()]+\\]")[[1]]),"\\[|\\]",""))%>%
+  dplyr::ungroup()
+
+
+
+fullTrueValues<-rbind.fill(trueValues)
+
+
+Lambda<-fullHyperPars%>%
+  dplyr::filter(TruePar=="Lambda")%>%
+  dplyr::select(ParIndex,Mean,m,i)%>%
+  dplyr::rename(mgmt=ParIndex,lambda=Mean)
+
+Decline<-fullHyperPars%>%
+  dplyr::filter(TruePar=="Decline")%>%
+  dplyr::select(ParIndex,Mean,m,i)%>%
+  dplyr::rename(mgmt=ParIndex,probDecline=Mean)
+
+Objectives<-merge(Lambda,Decline,by=c("mgmt","m","i"))%>%
+  dplyr::mutate(mgmt=as.numeric(mgmt))%>%
+  data.table(key="mgmt")%>%
+  merge(data.table(managementOptions%>%
+                     dplyr::select(mgmt,CostMgmt),key="mgmt"))%>%
+  dplyr::mutate(CostScore=ObjectiveScore(CostMgmt,minimize = T)*Weights[2],
+                BioScore=ObjectiveScore(lambda,
+                                        Max=globalLimits$lambda$max,
+                                        Min=globalLimits$lambda$min)*Weights[1],
+                BioScore2=ObjectiveScore(probDecline,Min = 0,Max=0.5,minimize = T)*Weights[1],
+                Score=CostScore+BioScore)
+
+
+system.time({resu3<-Objectives%>%
+  # For each monitoring m and paramater space index i
+  dplyr::group_by(m,i,mgmt)%>%
+  dplyr::summarise(
+    lambda=mean(lambda),
+    probDecline=mean(probDecline),
+    Score=mean(Score),	  
+    BioScore=mean(BioScore),
+    BioScore2=mean(BioScore2),
+    Score2=mean(BioScore2+CostScore),
+    CostScore=mean(CostScore))%>%
+  # Only keep the management that maximizes score
+  # filter(Lambda==max(Lambda))%>%
+  dplyr::group_by(m,i)%>%
+  dplyr::mutate(MaxScore=Score==max(Score))%>%
+  dplyr::mutate(MaxScore2=Score2==max(Score2))%>%
+  dplyr::ungroup()%>%
+  # Append true values of parameter space index i 
+  merge(fullTrueValues%>%
+          dplyr::rename(i=Sim,
+                        trueLambda=Lambda,
+                        trueDecline=Decline),
+        by=c("m","i","mgmt"))%>%
+  dplyr::group_by(m,i,mgmt)%>%
+  dplyr::ungroup()%>%
+  merge(managementOptions,by="mgmt")%>%
+  merge(monitoringOptions,by="m")%>%
+  dplyr::mutate(Cost=CostMonitoring+CostMgmt)%>%
+  dplyr::ungroup()%>%
+  dplyr::mutate(trueBioScore=ObjectiveScore(trueLambda,
+                                            Min = globalLimits$lambda$min,
+                                            Max = globalLimits$lambda$max)*Weights[1],
+                trueCostScore=ObjectiveScore(Cost,Min = 0,minimize = T)*Weights[2],
+                trueScore=trueBioScore+trueCostScore)%>%
+  dplyr::group_by(m,i)%>%
+  dplyr::mutate(MaxTrueScore=Score==max(trueScore))%>%	 
+  ungroup()})
+
+### Consequence Table for Monitoring Options
+system.time({finalConsequenceTable<-resu3%>%
+  # For each monitoring scenario
+  dplyr::filter(MaxScore)%>%
+  # dplyr::filter(MaxScore2)%>%
+  dplyr::group_by(m)%>%
+  # Get the expected outcomes (average of parameter space)
+  dplyr::summarise(b=mean(lambda),DeclineProb=mean(probDecline),
+                   c=mean(Cost),c2=mean(CostMgmt))%>%
+  # Get the expected outcomes (average of parameter space)
+  # dplyr::summarise(b=mean(trueLambda),DeclineProb=mean(decline),
+  # c=mean(Cost),c2=mean(CostMgmt))%>%
+  # Create scores for each outcome
+  dplyr::mutate(BioScore=ObjectiveScore(b,
+                                        Min = globalLimits$lambda$min,
+                                        Max = globalLimits$lambda$max)*Weights[1],
+                
+                # This might need to change - is the Cost scored based on management or on monitoring?						 
+                CostScore=ObjectiveScore(c,Min = 0,Max = ,minimize = T)*Weights[2],
+                CostScoreMgmt=ObjectiveScore(c2,Min = 0,Max = ,minimize = T)*Weights[2],
+                
+                Score=BioScore+CostScore,
+                nSims=nrow(generatedData[[1]]$samples[[1]]))%>%
+  # Append monitoring information
+  merge(monitoringOptions)%>%
+  dplyr::arrange(desc(Score))%>%
+  dplyr::ungroup()%>%
+  ### Calculate expected value for each monitoring scenario
+  dplyr::mutate(EVSI_Lambda=b-b[m==Uncertainty_index],
+                EVSI_DeclineProb=DeclineProb-DeclineProb[m==Uncertainty_index],
+                EVSI_Cost = c-c[m==Uncertainty_index],
+                EVSI_CostMgmt = c2-c2[m==Uncertainty_index],
+                EVSI_Score = Score - Score[m==Uncertainty_index])})
+
+
+# Values to save from analysis
+VOI<-list()
+# The final consequence table sa
+VOI$finalConsequenceTable<-finalConsequenceTable
+# Results summarised by iteration, monitoring scenario and management alternative
+VOI$results.summ<-list(resu3=resu3)
+VOI$monitoringOptions<- monitoringOptions
+VOI$managementOptions<-managementOptions
+# A list of the priors used to generate the results
+VOI$priors<-priors
+# The global limits of the fundamental objectives (in this case, only Lambda)
+VOI$globalLimits<-globalLimits  
+# A dataset of the actual values (Lambda, survival and fecundity of each class under each management alternative)
+VOI$fullTrueValues<-fullTrueValues
+# Full hyper parameters of posterior distributios of each variable of interest. For each iteration under each monitoring alternative
+VOI$fullHyperPars<-fullHyperPars
+# A list with the full predicted outcomes, and a summary of those
+VOI$PredictedOutcomes<-list(Full=PredictedOutcomesFull,
+                            Summary=PredictedOutcomesSummary)
+# The weights used in the decision making
+VOI$Weights<-Weights
+
+save(VOI,file="Chapter 3 - Framework 1 - Results.RData")
 
 
