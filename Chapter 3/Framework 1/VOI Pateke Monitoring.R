@@ -466,7 +466,9 @@ for(s in ss){
   
   if(s%%print.crit==0){
     print(paste(s,"out of",max(ss)))
-    cat(paste(s,object.size(jags.list)),file="progress.txt")}
+    
+    # This line of code prints the progress as a text file - not necessary
+    # cat(paste(s,object.size(jags.list)),file="progress.txt")}
   
   
   
