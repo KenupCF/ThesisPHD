@@ -1,0 +1,46 @@
+################  
+## Likelihood ##
+################
+
+ # Count data
+	 for(i in 1:length(fledgings)){
+	 
+	 # Expected Count of Fledgings for each individual
+	 # (taking into account management applied)
+	 log(pred.count[i])<-reprodIntercept+
+		 reprodBetaSoftFeed*FecSoftFeed[i]+
+		 reprodBetaHardFeed*FecHardFeed[i]+ 
+		 re.t.fec[FecTime[i]]+
+		 0
+	 fledgings[i]~dpois(pred.count[i])
+	}
+	
+ # Post-release survival data
+  
+  for (i in 1:D[1]){ #First dimension of D is the number of individuals in the encounter history
+    
+	 # Expected Survival of each individual
+	 # (taking into account management applied)
+	 logit(predictSurvival[i])<-survIntercept+	 
+ 	     survBetaSoftFeed*PhiSoftFeed[i]+
+ 	     survBetaHardFeed*PhiHardFeed[i]+
+	     (survAgeEffect*1)+ #'1' to be substitutued by a design matrix if not all individuals are the same age, or are expected to change ages+
+		 #	Effect of Mast Years and of Poison Drops in response to those years
+		 survMastEffect*PhiMast[i]+
+		 survPoisonDropEffect*PhiMast[i]*PhiPoison[i]+
+	     re.t.phi[PhiTime[i]]+
+		 0
+
+	  
+	   for(j in 2:D[2]){
+	   
+	    # Converting the predicted annual survival
+		# to survival between surveys (assuming monthly surveys)
+		surveySurvival[i,j]<-pow(predictSurvival[i],1/12)
+	    
+	    alive[i,j]~dbern(surveySurvival[i,j]*alive[i,j-1])
+	    seen[i,j]~dbern(DetectProb*alive[i,j])
+      }
+     }
+	
+}
