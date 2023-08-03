@@ -1,0 +1,114 @@
+model{
+
+# Priors (currently shrunk to plausible ranges)
+# TrueSexRatio~dunif(0,1) #sex ratio of the population
+
+# ProbDetection~dnorm(0,1)  #probability of detection on the logit scale
+
+AlphaFecundity ~ dnorm(0,1) #log(fledgings) per female
+
+AlfaPhi ~ dnorm(0,1) 
+BetaSexPhi ~ dnorm(0, 1)	# effect of sex on on logit(Phi) #(is this a proper prior for the effect?) How 
+s.t.phi ~ dunif(0, 5)		# sd among surveys in logit(phi)
+
+# Beta.sex.phi.switch~dbern(1) # this is called an `indicator variable` (set value to 0 or 1 to make it never/always work)
+
+ProbDetection~dbeta(priorProbDetection[1],priorProbDetection[1])  #probability of detection on the logit scale
+ProbDetectionLogit<-logit(ProbDetection)
+
+s.t.p ~ dunif(0, 5)		# sd among surveys in logit(p)
+# RE.y.p.switch~dbern(1)  # this is called an `indicator variable` (set value to 0 or 1 to make it never/always work)
+
+
+# time.elapsed[1]<-0
+for(j in 1:n.surveys){
+# time.elapsed[j]<-
+TrueSexRatio[j]~dunif(0,1) #sex ratio of the population
+
+
+# recaptures[j]<-total.counts[j]-total.UB[j]
+
+#Yearly random effects
+re.t.p[j] ~ dnorm(0, pow(s.t.p, -2)) # assign random time effect on re-sighting probability
+re.t.phi[j] ~ dnorm(0, pow(s.t.phi, -2)) # assign random time effect on re-sighting probability
+
+# logit(ProbDetectionYear[j])<-ProbDetection + (re.t.p[j]*RE.y.p.switch)
+
+
+N.c[j]~dunif(mnka[j]*(useMNKA),1000)
+N[j]<-round(N.c[j])
+
+
+#Calculating N through the canonical estimator
+
+#big expression inside sampler, aiming for maginal gain on speed
+total.counts[j]~dbinom(ilogit(ProbDetectionLogit + (re.t.p[j]*1)),N[j])
+# total.counts[j]~dbinom(ilogit(ProbDetectionLogit + (re.t.p[j]*0)),N[j])
+
+#Sex ratios
+fem.counts[j]~dbinom(TrueSexRatio[j],total.counts[j])
+
+N.f[j]~dbinom(TrueSexRatio[j],N[j])
+
+
+}
+
+
+#Loop for each individual caught 
+for(i in 1:n.indiv){
+
+
+	for(j in (1+first[i]):n.surveys){
+
+
+	#whether individual alive is sampled from Bernoulli distribution, given it 
+	#big expression inside sampler, aiming for maginal gain on speed
+	alive[i,j] ~ dbern(pow(ilogit(AlfaPhi+(BetaSexPhi*sex[i])),intervals[j-1])*
+		alive[i, j-1])	# whether individual alive is sampled from Bernoulli distribution, given it was alive in the previous interval.
+	# }
+
+	# for(j in (0+first[i]):n.surveys){
+
+	#big expression inside sampler, aiming for maginal gain on speed
+	seen[i,j] ~ dbern(ilogit(ProbDetectionLogit + (re.t.p[j]*1))*(alive[i,j])) #probability of detecting a given individual in a survey comes from a bernoulli distribution, of p = `psight`, given individual is alive 
+	# seen[i,j] ~ dbern(ilogit(ProbDetectionLogit + (re.t.p[j]*0))*(alive[i,j])) #probability of detecting a given individual in a survey comes from a bernoulli distribution, of p = `psight`, given individual is alive 
+	}
+
+
+}
+
+
+#This loop goes over the variables regarding INTERVALS between surveys
+for(j in 2:n.surveys){
+
+Lambda[j-1]<-N[j]/(N[j-1]+1e-9)
+# isDecline[j-1]<-step((1/Lambda[j-1])-1)		
+
+}
+
+
+# This a 'moving-average' loop, used to calculate trend over the last X surveys
+for(j in 1:(n.surveys-1-timeSeriesBinSurvey+1)){
+
+TrendSurvey[j]<-pow(prod(Lambda[j:(timeSeriesBinSurvey+j-1)]),
+		  1/sum(intervals[j:(timeSeriesBinSurvey+j-1)]))
+		
+isDeclineTrendSurvey[j]<-step((1/(TrendSurvey[j]+1e-9))-1) #variable tracking if sample trend value is a decline		
+
+}
+
+#This a 'moving-average' loop, used to calculate trend over the last X years
+
+for(j in 1:length(TrendIndexes[,1])){
+
+TrendYear[j]<-pow(prod(Lambda[TrendIndexes[j,1]:TrendIndexes[j,2]]),
+		1/sum(intervals[TrendIndexes[j,1]:TrendIndexes[j,2]]))
+
+isDeclineTrendYear[j]<-step((1/(TrendYear[j]+1e-9))-1) #variable tracking if sample trend value is a decline		 
+		
+
+
+}
+
+
+}
