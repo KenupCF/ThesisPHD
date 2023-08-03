@@ -628,17 +628,6 @@ for(t in 1:nYears){
 end.<-now()
 
 simsRan=ConsequenceTableHistory%>%filter(Year==1)%>%pull(Sim)%>%max
-# Pushbullet Notification
-if(1==1){RPushbullet::pbPost(title="JAGS Run Finished",
-                             body=paste("Process finished in",
-                                        abs(round(difftime(start.,end.,units="mins"),2)),
-                                        "minutes. Ran ",
-                                        simsRan,
-                                        " simulations over ",
-                                        ConsequenceTableHistory%>%pull(Year)%>%max,
-                                        " time steps."),
-                             type = "note",apikey = "o.NfaWdVVPxnLb8DY2Ab27rregtjC2O23M",email ="caio.kenup@gmail.com")
-}
 
 priors_timelapse$survMastEffect%>%filter(Sim==2)%>%arrange(Sim,Year)
 priors_timelapse$survAgeEffect%>%filter(Sim<=simsRan)%>%arrange(Sim,Year)
