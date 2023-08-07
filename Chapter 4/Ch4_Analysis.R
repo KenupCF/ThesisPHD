@@ -663,13 +663,7 @@ load(file = paste0(
        "C:\\Users\\",username,"\\Dropbox\\03-Work\\01-Science\\02-PhD\\02-Analysis\\Chapter 4\\AM Example v3.RData",sep=""))
 # Ch04_Example0<-Ch04_Example
 
-
-# Pushbullet Notification
-if(1==1){RPushbullet::pbPost(title="JAGS Saving Finished",
-                             body=paste("Info Saved!"),
-                             type = "note",apikey = "o.NfaWdVVPxnLb8DY2Ab27rregtjC2O23M",email ="caio.kenup@gmail.com")
-}
-
+##### Plots
 
 prow<-plot_grid(
   AM_fig1 + theme(legend.position="none"),
